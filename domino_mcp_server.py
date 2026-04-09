@@ -857,10 +857,29 @@ def _build_landing_html(base_url: str) -> str:
     </div>
 
     <div id="tab-claude" class="tab-content active">
-      <p style="font-size:13px;margin-bottom:12px;">Run this command in your terminal:</p>
+      <h3>Option A: Static API key</h3>
       <pre><code>claude mcp add --transport http domino \\
   {mcp_url} \\
   --header "X-Domino-User-Api-Key: $DOMINO_API_KEY"</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
+
+      <h3>Option B: JSON config (recommended)</h3>
+      <p style="font-size:13px;margin-bottom:12px;">Add to <code>.claude.json</code> or <code>.mcp.json</code>:</p>
+      <pre><code>{{
+  "mcpServers": {{
+    "domino-mcp": {{
+      "type": "http",
+      "url": "{mcp_url}",
+      "headers": {{
+        "X-Domino-User-Api-Key": "${{DOMINO_API_KEY}}"
+      }}
+    }}
+  }}
+}}</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
+      <div class="note">
+        For OAuth / auto-refreshing tokens, replace <code>headers</code> with
+        <code>"headersHelper": "python3 your_auth_script.py"</code> — the script should
+        print JSON headers to stdout (e.g. <code>{{"Authorization": "Bearer &lt;token&gt;"}}</code>).
+      </div>
       <p style="font-size:13px;margin-top:12px;color:#65657B;">Verify with: <code style="background:#F7F7F8;padding:2px 6px;border-radius:3px;">claude mcp list</code></p>
     </div>
 
@@ -868,7 +887,7 @@ def _build_landing_html(base_url: str) -> str:
       <p style="font-size:13px;margin-bottom:12px;">Add to <code>.cursor/mcp.json</code> in your project root:</p>
       <pre><code>{{
   "mcpServers": {{
-    "domino": {{
+    "domino-mcp": {{
       "url": "{mcp_url}",
       "transport": "streamable-http",
       "headers": {{
