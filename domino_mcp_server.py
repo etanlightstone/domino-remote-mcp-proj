@@ -456,14 +456,10 @@ async def get_domino_environment_info() -> Dict[str, Any]:
     }
 
     if _is_domino_workspace():
-        info["domino_host"] = _get_external_host()
         info["mcp_server_owner"] = os.environ.get("DOMINO_PROJECT_OWNER", "")
         info["mcp_server_project"] = os.environ.get("DOMINO_PROJECT_NAME", "")
-        info["mcp_server_project_id"] = os.environ.get("DOMINO_PROJECT_ID", "")
-        info["auth_identity"] = "app_owner (localhost:8899 token)"
     else:
-        info["domino_host"] = _get_domino_host()
-        info["auth_identity"] = "api_key (DOMINO_API_KEY env var)"
+        info["note"] = "Server running outside Domino."
 
     return info
 
