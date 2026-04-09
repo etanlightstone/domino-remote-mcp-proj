@@ -8,12 +8,11 @@
 #   1. As a Domino App  — set DOMINO_API_HOST (auto-set by platform), uses localhost:8899 token
 #   2. Standalone        — set DOMINO_HOST and DOMINO_API_KEY env vars
 #
-# Auth modes (MCP_AUTH_MODE env var):
-#   "app_owner"  (default) — All API calls use the app owner's identity (localhost:8899 token
-#                             inside Domino, or DOMINO_API_KEY outside). Simple, no per-user setup.
-#   "user_token"           — Each connecting user must send their Domino API key in the
-#                             X-Domino-User-Api-Key header. The server uses that key for
-#                             Domino API calls, giving per-user identity and audit trail.
+# Authentication (automatic):
+#   If the connecting MCP client sends credentials (X-Domino-User-Api-Key header or
+#   Authorization: Bearer token), those are used for Domino API calls → per-user identity.
+#   If no credentials are sent, falls back to the app owner's identity (localhost:8899
+#   inside Domino, or DOMINO_API_KEY outside).
 
 from typing import Dict, Any
 from fastmcp import FastMCP, Context
@@ -22,6 +21,7 @@ import requests
 import os
 import re
 import urllib.parse
+import shlex
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -46,15 +46,15 @@ def _get_domino_host() -> str:
     """
     Return the base URL for Domino API calls.
 
-    In app_owner mode inside Domino: route through localhost:8899 (auto-injects owner token).
-    In user_token mode inside Domino: call DOMINO_API_HOST directly so the user's own
-        API key is used instead of the app owner's token.
+    When a per-request user credential is present: call DOMINO_API_HOST directly
+    so the user's own API key / JWT is used (localhost:8899 would override it).
+    When no user credential (app_owner fallback): route through localhost:8899.
     Outside Domino: use DOMINO_HOST from env/.env file.
     """
     if _is_domino_workspace():
-        if MCP_AUTH_MODE == "user_token":
-            # Bypass localhost:8899 proxy — it would inject the app owner's token,
-            # overriding the per-user API key we want to use.
+        # If the current request has user credentials, bypass localhost:8899
+        # because the proxy would inject the app owner's token instead.
+        if _current_user_api_key.get() is not None:
             api_host = os.environ.get("DOMINO_API_HOST", "")
             if api_host:
                 return api_host.rstrip("/")
@@ -94,27 +94,30 @@ def _get_auth_headers() -> dict:
     """
     Return authentication headers for Domino API calls.
 
-    In user_token mode: uses the per-request API key from the MCP client.
-    In app_owner mode:  uses localhost:8899 (inside Domino) or DOMINO_API_KEY (outside).
-    """
-    # user_token mode: prefer the per-request credential
-    if MCP_AUTH_MODE == "user_token":
-        credential = _current_user_api_key.get()
-        if credential:
-            cred_type, cred_value = credential
-            if cred_type == "bearer":
-                # Preserve as Bearer token (works for Keycloak JWTs and OAuth tokens)
-                return {"Authorization": f"Bearer {cred_value}"}
-            else:
-                # Plain API key
-                return {"X-Domino-Api-Key": cred_value}
+    Priority order:
+      1. Per-request user credential (API key or Bearer token from MCP client)
+      2. API_KEY_OVERRIDE env var
+      3. App owner's ephemeral token (localhost:8899, inside Domino)
+      4. DOMINO_API_KEY env var (outside Domino)
 
-    # Explicit override always wins
+    This means: if a user sends their own credentials, those are always used
+    (per-user identity). If not, falls back to the app owner's identity.
+    """
+    # 1. Per-request user credential (always preferred when present)
+    credential = _current_user_api_key.get()
+    if credential:
+        cred_type, cred_value = credential
+        if cred_type == "bearer":
+            return {"Authorization": f"Bearer {cred_value}"}
+        else:
+            return {"X-Domino-Api-Key": cred_value}
+
+    # 2. Explicit override
     api_key_override = os.environ.get("API_KEY_OVERRIDE")
     if api_key_override:
         return {"X-Domino-Api-Key": api_key_override}
 
-    # Inside Domino: ephemeral token from local proxy
+    # 3. Inside Domino: ephemeral token from local proxy (app owner identity)
     if _is_domino_workspace():
         resp = requests.get("http://localhost:8899/access-token")
         resp.raise_for_status()
@@ -123,7 +126,7 @@ def _get_auth_headers() -> dict:
             return {"Authorization": token}
         return {"Authorization": f"Bearer {token}"}
 
-    # Outside Domino: static API key
+    # 4. Outside Domino: static API key
     api_key = os.getenv("DOMINO_API_KEY")
     if not api_key:
         raise ValueError("DOMINO_API_KEY environment variable not set.")
@@ -257,52 +260,49 @@ mcp = FastMCP(
 
 
 # ---------------------------------------------------------------------------
-# Middleware — user_token auth mode
+# Middleware — extract user credentials from incoming requests
 # ---------------------------------------------------------------------------
-# When MCP_AUTH_MODE=user_token, extract the user's Domino API key from the
-# incoming HTTP request's X-Domino-User-Api-Key header and store it in a
-# contextvar so that _get_auth_headers() can pick it up for Domino API calls.
+# Always attempts to extract the user's Domino API key or Bearer token from
+# the incoming HTTP request. If present, _get_auth_headers() will use it
+# (per-user identity). If absent, falls back to app owner's identity.
 
-class UserTokenMiddleware(Middleware):
+class UserCredentialMiddleware(Middleware):
     """
-    Extracts the Domino API key from the incoming MCP request and makes it
+    Extracts Domino credentials from incoming MCP requests and makes them
     available to tool handlers via the _current_user_api_key contextvar.
-    Only active when MCP_AUTH_MODE=user_token.
+
+    Supports two header formats:
+      - X-Domino-User-Api-Key: <key>       → forwarded as X-Domino-Api-Key
+      - Authorization: Bearer <jwt-or-key>  → forwarded as Authorization: Bearer
     """
 
     async def on_call_tool(self, context: MiddlewareContext, call_next):
-        if MCP_AUTH_MODE != "user_token":
-            return await call_next(context)
-
-        # Try to read the user's API key from the HTTP request headers.
-        # FastMCP exposes the underlying HTTP request via get_http_request().
         credential = None
         try:
             from fastmcp.server.dependencies import get_http_request
             request = get_http_request()
-            # Check custom header first (plain API key)
             api_key = request.headers.get("x-domino-user-api-key")
             if api_key:
                 credential = ("api_key", api_key)
             else:
-                # Fall back to Authorization header (Bearer JWT or API key)
                 auth = request.headers.get("authorization", "")
                 if auth.startswith("Bearer "):
                     credential = ("bearer", auth.removeprefix("Bearer ").strip())
         except Exception:
             pass
 
-        if not credential:
-            return {"error": "user_token mode requires X-Domino-User-Api-Key header or Authorization: Bearer token"}
-
-        token = _current_user_api_key.set(credential)
-        try:
+        if credential:
+            token = _current_user_api_key.set(credential)
+            try:
+                return await call_next(context)
+            finally:
+                _current_user_api_key.reset(token)
+        else:
+            # No user credential — fall through to app_owner identity
             return await call_next(context)
-        finally:
-            _current_user_api_key.reset(token)
 
 
-mcp.add_middleware(UserTokenMiddleware())
+mcp.add_middleware(UserCredentialMiddleware())
 
 
 # In-memory cache for file version conflict detection.
@@ -335,8 +335,15 @@ async def run_domino_job(
 
     api_url = f"{_get_domino_host()}/v1/projects/{encoded_user}/{encoded_project}/runs"
     headers = {**_get_auth_headers(), "Content-Type": "application/json"}
+    # Use shlex.split to respect shell quoting (e.g. python -c "import os; ...")
+    # For commands with shell features (pipes, redirects), wrap in bash -c
+    if any(c in run_command for c in ['|', '>', '<', '&&', '||', ';']):
+        command_list = ["bash", "-c", run_command]
+    else:
+        command_list = shlex.split(run_command)
+
     payload = {
-        "command": run_command.split(),
+        "command": command_list,
         "isDirect": False,
         "title": title,
         "publishApiEndpoint": False,
@@ -444,9 +451,13 @@ async def get_domino_environment_info() -> Dict[str, Any]:
     project. Always ask the user which project they want to work with, or call
     list_projects to let them choose.
     """
+    # Detect whether the current request has user credentials
+    has_user_cred = _current_user_api_key.get() is not None
+    auth_desc = "per-user credential (from request headers)" if has_user_cred else "app owner identity (server-side)"
+
     info: Dict[str, Any] = {
-        "server_type": "remote_http",
-        "auth_mode": MCP_AUTH_MODE,
+        "server_type": "remote_http_stateless",
+        "auth_identity": auth_desc,
         "instructions": (
             "This is a shared remote MCP server. The hosting project listed below "
             "is where the server itself runs — it is NOT the user's target project. "
@@ -898,9 +909,13 @@ Auth Header:   Authorization: Bearer &lt;your-token&gt;</code><button class="cop
   <div class="card">
     <h2>Authentication</h2>
     <p style="font-size:13px;margin-bottom:12px;">
-      This server is running in <strong>{MCP_AUTH_MODE}</strong> mode.
+      This server <strong>auto-detects your credentials</strong>.
     </p>
-    {"<div class='warn'>In <strong>app_owner</strong> mode, all Domino API calls use the server's own identity — not yours. Your API key is only used to reach this server through Domino's proxy. Ask the admin to set <code>MCP_AUTH_MODE=user_token</code> for per-user identity.</div>" if MCP_AUTH_MODE == "app_owner" else "<div class='note'>In <strong>user_token</strong> mode, your API key or Bearer token is used for all Domino API calls. You get your own permissions and audit trail.</div>"}
+    <div class="note">
+      If you send your Domino API key or OAuth Bearer token (via the headers shown above),
+      all Domino API calls will run as <strong>your identity</strong> — with your permissions and audit trail.
+      If no credentials are sent, the server falls back to the app owner's identity.
+    </div>
   </div>
 
   <!-- Available Tools -->
@@ -998,4 +1013,4 @@ if __name__ == "__main__":
     print(f"  Inside Domino: {_is_domino_workspace()}")
     print(f"  MCP endpoint: http://0.0.0.0:{MCP_PORT}/mcp")
     print(f"  Setup page:   http://0.0.0.0:{MCP_PORT}/")
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=MCP_PORT)
+    mcp.run(transport="streamable-http", host="0.0.0.0", port=MCP_PORT, stateless_http=True)
