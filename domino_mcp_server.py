@@ -438,31 +438,32 @@ async def check_domino_job_run_results(
 @mcp.tool()
 async def get_domino_environment_info() -> Dict[str, Any]:
     """
-    Returns information about the current Domino environment and auth mode.
-    Call this at the start of a session to discover context.
-    """
-    import subprocess
+    Returns information about this MCP server's environment and auth mode.
 
+    IMPORTANT: The server hosting project shown here is NOT the user's target
+    project. Always ask the user which project they want to work with, or call
+    list_projects to let them choose.
+    """
     info: Dict[str, Any] = {
-        "inside_domino": _is_domino_workspace(),
-        "domino_host": _get_domino_host(),
-        "auth_mode": MCP_AUTH_MODE,
         "server_type": "remote_http",
+        "auth_mode": MCP_AUTH_MODE,
+        "instructions": (
+            "This is a shared remote MCP server. The hosting project listed below "
+            "is where the server itself runs — it is NOT the user's target project. "
+            "Ask the user which Domino project they want to operate on, or call "
+            "list_projects to show them their available projects."
+        ),
     }
 
     if _is_domino_workspace():
-        info["user_name"] = os.environ.get("DOMINO_PROJECT_OWNER", "")
-        info["project_name"] = os.environ.get("DOMINO_PROJECT_NAME", "")
-        info["project_id"] = os.environ.get("DOMINO_PROJECT_ID", "")
+        info["domino_host"] = _get_external_host()
+        info["mcp_server_owner"] = os.environ.get("DOMINO_PROJECT_OWNER", "")
+        info["mcp_server_project"] = os.environ.get("DOMINO_PROJECT_NAME", "")
+        info["mcp_server_project_id"] = os.environ.get("DOMINO_PROJECT_ID", "")
         info["auth_identity"] = "app_owner (localhost:8899 token)"
-        try:
-            result = subprocess.run(["git", "status"], capture_output=True, text=True, timeout=5)
-            info["is_dfs_project"] = result.returncode != 0
-        except Exception:
-            info["is_dfs_project"] = True
     else:
+        info["domino_host"] = _get_domino_host()
         info["auth_identity"] = "api_key (DOMINO_API_KEY env var)"
-        info["note"] = "Running outside Domino. Set DOMINO_HOST and DOMINO_API_KEY."
 
     return info
 
