@@ -46,18 +46,23 @@ def _get_domino_host() -> str:
     """
     Return the base URL for Domino API calls.
 
-    When a per-request user credential is present: call DOMINO_API_HOST directly
-    so the user's own API key / JWT is used (localhost:8899 would override it).
-    When no user credential (app_owner fallback): route through localhost:8899.
+    Inside Domino: always route through localhost:8899. This local proxy handles
+    service discovery, TLS, and routing to internal services. DOMINO_API_HOST is
+    the raw internal K8s URL (e.g. nucleus-frontend.domino-platform:80) which
+    doesn't accept external user tokens.
+
+    When a user credential is present AND DOMINO_PUBLIC_URL is configured, we
+    call the public gateway directly so the user's own token is used.
+
     Outside Domino: use DOMINO_HOST from env/.env file.
     """
     if _is_domino_workspace():
-        # If the current request has user credentials, bypass localhost:8899
-        # because the proxy would inject the app owner's token instead.
+        # If user credentials are present, prefer the public URL (if configured)
+        # because localhost:8899 may inject the app owner's token instead.
         if _current_user_api_key.get() is not None:
-            api_host = os.environ.get("DOMINO_API_HOST", "")
-            if api_host:
-                return api_host.rstrip("/")
+            public_url = os.environ.get("DOMINO_PUBLIC_URL", "")
+            if public_url:
+                return public_url.rstrip("/")
         return "http://localhost:8899"
     host = os.getenv("DOMINO_HOST")
     if not host:
