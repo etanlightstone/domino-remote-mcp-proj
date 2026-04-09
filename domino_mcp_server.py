@@ -714,6 +714,259 @@ async def smart_sync_file(
 
 
 # ---------------------------------------------------------------------------
+# Web UI — setup instructions at /
+# ---------------------------------------------------------------------------
+
+from starlette.requests import Request
+from starlette.responses import HTMLResponse
+
+
+def _build_landing_html(base_url: str) -> str:
+    mcp_url = f"{base_url}/mcp"
+    tools = [
+        ("run_domino_job", "Execute a command as a Domino job"),
+        ("check_domino_job_run_status", "Poll a job's status until finished"),
+        ("check_domino_job_run_results", "Get stdout from a completed job"),
+        ("get_domino_environment_info", "Discover server context and auth mode"),
+        ("list_projects", "List accessible Domino projects"),
+        ("list_domino_project_files", "Browse files in a DFS project"),
+        ("upload_file_to_domino_project", "Upload file content to a project"),
+        ("download_file_from_domino_project", "Download a file from a project"),
+        ("smart_sync_file", "Upload with conflict detection"),
+    ]
+    tools_rows = "\n".join(
+        f'<tr><td><code>{name}</code></td><td>{desc}</td></tr>' for name, desc in tools
+    )
+
+    return f"""\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Domino MCP Server</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{ font-family: Inter, -apple-system, sans-serif; color: #2E2E38; background: #F7F7F8; }}
+  .topbar {{ background: #2E2E38; height: 48px; display: flex; align-items: center; padding: 0 24px; }}
+  .topbar svg {{ height: 28px; }}
+  .topbar span {{ color: #fff; font-size: 14px; font-weight: 500; margin-left: 12px; opacity: 0.7; }}
+  .container {{ max-width: 760px; margin: 0 auto; padding: 32px 24px; }}
+  h1 {{ font-size: 24px; font-weight: 700; margin-bottom: 4px; }}
+  .subtitle {{ color: #65657B; font-size: 14px; margin-bottom: 28px; }}
+  .status {{ display: inline-flex; align-items: center; gap: 6px; background: #E8F5E9; color: #1B6E2D;
+             font-size: 13px; font-weight: 500; padding: 4px 12px; border-radius: 12px; margin-bottom: 24px; }}
+  .status .dot {{ width: 8px; height: 8px; background: #28A464; border-radius: 50%; }}
+  .card {{ background: #fff; border: 1px solid #E0E0E0; border-radius: 8px; padding: 20px; margin-bottom: 16px; }}
+  .card h2 {{ font-size: 15px; font-weight: 600; margin-bottom: 12px; }}
+  .card h3 {{ font-size: 13px; font-weight: 600; color: #65657B; text-transform: uppercase; letter-spacing: 0.5px;
+              margin: 16px 0 8px; }}
+  .card h3:first-child {{ margin-top: 0; }}
+  .endpoint {{ display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }}
+  .endpoint code {{ flex: 1; background: #F7F7F8; border: 1px solid #E0E0E0; border-radius: 4px;
+                    padding: 10px 12px; font-size: 14px; font-family: 'SF Mono', Menlo, monospace; word-break: break-all; }}
+  .copy-btn {{ background: #543FDE; color: #fff; border: none; border-radius: 4px; padding: 10px 16px;
+               font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; font-family: Inter, sans-serif; }}
+  .copy-btn:hover {{ background: #3B23D1; }}
+  .copy-btn.copied {{ background: #28A464; }}
+  pre {{ background: #1E1E2E; color: #CDD6F4; border-radius: 6px; padding: 16px; overflow-x: auto;
+         font-size: 13px; line-height: 1.6; font-family: 'SF Mono', Menlo, Consolas, monospace; position: relative; }}
+  pre .copy-btn {{ position: absolute; top: 8px; right: 8px; padding: 4px 10px; font-size: 11px;
+                   background: rgba(255,255,255,0.1); }}
+  pre .copy-btn:hover {{ background: rgba(255,255,255,0.2); }}
+  .tabs {{ display: flex; gap: 0; margin-bottom: 0; border-bottom: 2px solid #E0E0E0; }}
+  .tab {{ padding: 8px 16px; font-size: 13px; font-weight: 500; cursor: pointer; border: none; background: none;
+          color: #65657B; border-bottom: 2px solid transparent; margin-bottom: -2px; font-family: Inter, sans-serif; }}
+  .tab.active {{ color: #543FDE; border-bottom-color: #543FDE; }}
+  .tab-content {{ display: none; padding-top: 16px; }}
+  .tab-content.active {{ display: block; }}
+  .note {{ background: #F0EDFC; border-left: 3px solid #543FDE; padding: 12px 16px; border-radius: 0 4px 4px 0;
+           font-size: 13px; color: #3B23D1; margin-top: 12px; line-height: 1.5; }}
+  .warn {{ background: #FFF8E1; border-left: 3px solid #CCB718; padding: 12px 16px; border-radius: 0 4px 4px 0;
+           font-size: 13px; color: #7A6E0E; margin-top: 12px; line-height: 1.5; }}
+  table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+  th {{ text-align: left; font-weight: 600; padding: 8px 12px; border-bottom: 2px solid #E0E0E0; }}
+  td {{ padding: 8px 12px; border-bottom: 1px solid #F0F0F0; }}
+  td code {{ background: #F7F7F8; padding: 2px 6px; border-radius: 3px; font-size: 12px; }}
+  .step {{ display: flex; gap: 12px; margin-bottom: 16px; }}
+  .step-num {{ flex-shrink: 0; width: 24px; height: 24px; background: #543FDE; color: #fff; border-radius: 50%;
+               font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center; }}
+  .step-body {{ flex: 1; font-size: 14px; line-height: 1.6; }}
+  .step-body code {{ background: #F7F7F8; padding: 2px 6px; border-radius: 3px; font-size: 13px; }}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <svg viewBox="0 0 100 30" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="15" cy="15" r="12" fill="#543FDE"/>
+    <circle cx="15" cy="15" r="5" fill="#fff"/>
+    <text x="34" y="21" fill="#fff" font-family="Inter, sans-serif" font-size="16" font-weight="700">domino</text>
+  </svg>
+  <span>MCP Server</span>
+</div>
+
+<div class="container">
+
+  <div class="status"><span class="dot"></span> Running</div>
+  <h1>Domino Remote MCP Server</h1>
+  <p class="subtitle">Connect your AI coding agent to Domino Data Lab</p>
+
+  <!-- MCP Endpoint -->
+  <div class="card">
+    <h2>MCP Endpoint</h2>
+    <div class="endpoint">
+      <code id="mcp-url">{mcp_url}</code>
+      <button class="copy-btn" onclick="copyText('mcp-url', this)">Copy</button>
+    </div>
+  </div>
+
+  <!-- Setup Guide -->
+  <div class="card">
+    <h2>Setup Guide</h2>
+
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body">
+        Get your <strong>Domino API Key</strong> from your Domino user profile
+        (Account Settings &rarr; API Key). Set it as an environment variable on your machine:
+        <pre style="margin-top:8px"><code>export DOMINO_API_KEY="your-api-key-here"</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-body">Configure your coding agent (pick your tool below):</div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab(event, 'tab-claude')">Claude Code</button>
+      <button class="tab" onclick="switchTab(event, 'tab-cursor')">Cursor</button>
+      <button class="tab" onclick="switchTab(event, 'tab-other')">Other</button>
+    </div>
+
+    <div id="tab-claude" class="tab-content active">
+      <p style="font-size:13px;margin-bottom:12px;">Run this command in your terminal:</p>
+      <pre><code>claude mcp add --transport http domino \\
+  {mcp_url} \\
+  --header "X-Domino-User-Api-Key: $DOMINO_API_KEY"</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
+      <p style="font-size:13px;margin-top:12px;color:#65657B;">Verify with: <code style="background:#F7F7F8;padding:2px 6px;border-radius:3px;">claude mcp list</code></p>
+    </div>
+
+    <div id="tab-cursor" class="tab-content">
+      <p style="font-size:13px;margin-bottom:12px;">Add to <code>.cursor/mcp.json</code> in your project root:</p>
+      <pre><code>{{
+  "mcpServers": {{
+    "domino": {{
+      "url": "{mcp_url}",
+      "transport": "streamable-http",
+      "headers": {{
+        "X-Domino-User-Api-Key": "${{DOMINO_API_KEY}}"
+      }}
+    }}
+  }}
+}}</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
+      <div class="note">
+        Cursor expands <code>${{DOMINO_API_KEY}}</code> from your shell environment automatically.
+      </div>
+    </div>
+
+    <div id="tab-other" class="tab-content">
+      <p style="font-size:13px;margin-bottom:12px;">
+        Any MCP client supporting <strong>Streamable HTTP</strong> transport can connect.
+      </p>
+      <pre><code>MCP Endpoint:  {mcp_url}
+Transport:     streamable-http
+Auth Header:   X-Domino-User-Api-Key: &lt;your-key&gt;
+  — or —
+Auth Header:   Authorization: Bearer &lt;your-token&gt;</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
+      <div class="note">
+        Both Domino API keys and OAuth/JWT Bearer tokens are accepted.
+      </div>
+    </div>
+
+    <div class="step" style="margin-top:20px;">
+      <div class="step-num">3</div>
+      <div class="step-body">
+        Start using Domino tools in your agent. Try asking it to
+        <em>"list my Domino projects"</em> or <em>"run a job in project X"</em>.
+      </div>
+    </div>
+  </div>
+
+  <!-- Auth -->
+  <div class="card">
+    <h2>Authentication</h2>
+    <p style="font-size:13px;margin-bottom:12px;">
+      This server is running in <strong>{MCP_AUTH_MODE}</strong> mode.
+    </p>
+    {"<div class='warn'>In <strong>app_owner</strong> mode, all Domino API calls use the server's own identity — not yours. Your API key is only used to reach this server through Domino's proxy. Ask the admin to set <code>MCP_AUTH_MODE=user_token</code> for per-user identity.</div>" if MCP_AUTH_MODE == "app_owner" else "<div class='note'>In <strong>user_token</strong> mode, your API key or Bearer token is used for all Domino API calls. You get your own permissions and audit trail.</div>"}
+  </div>
+
+  <!-- Available Tools -->
+  <div class="card">
+    <h2>Available Tools</h2>
+    <table>
+      <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+      <tbody>
+        {tools_rows}
+      </tbody>
+    </table>
+  </div>
+
+</div>
+
+<script>
+function copyText(elementId, btn) {{
+  const text = document.getElementById(elementId).textContent;
+  navigator.clipboard.writeText(text).then(() => {{
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => {{ btn.textContent = 'Copy'; btn.classList.remove('copied'); }}, 2000);
+  }});
+}}
+
+function copyCode(btn) {{
+  const pre = btn.closest('pre');
+  const code = pre.querySelector('code').textContent;
+  navigator.clipboard.writeText(code).then(() => {{
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => {{ btn.textContent = 'Copy'; btn.classList.remove('copied'); }}, 2000);
+  }});
+}}
+
+function switchTab(event, tabId) {{
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById(tabId).classList.add('active');
+}}
+</script>
+</body>
+</html>"""
+
+
+@mcp.custom_route("/", methods=["GET"])
+async def landing_page(request: Request) -> HTMLResponse:
+    # Build the base URL from the incoming request so the displayed MCP endpoint
+    # matches whatever URL the user actually used to reach this page.
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.headers.get("host", "localhost"))
+    # Strip any trailing /mcp or / from the path prefix
+    path = request.scope.get("root_path", "").rstrip("/")
+    base_url = f"{scheme}://{host}{path}"
+    return HTMLResponse(_build_landing_html(base_url))
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request: Request) -> HTMLResponse:
+    from starlette.responses import JSONResponse
+    return JSONResponse({"status": "ok", "auth_mode": MCP_AUTH_MODE})
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -722,4 +975,5 @@ if __name__ == "__main__":
     print(f"  Auth mode: {MCP_AUTH_MODE}")
     print(f"  Inside Domino: {_is_domino_workspace()}")
     print(f"  MCP endpoint: http://0.0.0.0:{MCP_PORT}/mcp")
+    print(f"  Setup page:   http://0.0.0.0:{MCP_PORT}/")
     mcp.run(transport="streamable-http", host="0.0.0.0", port=MCP_PORT)
