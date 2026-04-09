@@ -772,6 +772,7 @@ def _build_landing_html(base_url: str) -> str:
   .copy-btn.copied {{ background: #28A464; }}
   pre {{ background: #1E1E2E; color: #CDD6F4; border-radius: 6px; padding: 16px; overflow-x: auto;
          font-size: 13px; line-height: 1.6; font-family: 'SF Mono', Menlo, Consolas, monospace; position: relative; }}
+  pre code {{ background: none; padding: 0; border-radius: 0; color: inherit; font-size: inherit; }}
   pre .copy-btn {{ position: absolute; top: 8px; right: 8px; padding: 4px 10px; font-size: 11px;
                    background: rgba(255,255,255,0.1); }}
   pre .copy-btn:hover {{ background: rgba(255,255,255,0.2); }}
@@ -820,6 +821,7 @@ def _build_landing_html(base_url: str) -> str:
       <code id="mcp-url">{mcp_url}</code>
       <button class="copy-btn" onclick="copyText('mcp-url', this)">Copy</button>
     </div>
+    <p style="font-size:12px;color:#8F8FA3;margin-top:4px;" id="url-note"></p>
   </div>
 
   <!-- Setup Guide -->
@@ -943,6 +945,29 @@ function switchTab(event, tabId) {{
   event.target.classList.add('active');
   document.getElementById(tabId).classList.add('active');
 }}
+
+// Auto-detect the real MCP URL from the browser's address bar.
+// The server-side guess may be wrong behind a reverse proxy, but
+// window.location always reflects what the user actually visited.
+(function() {{
+  const base = window.location.origin + window.location.pathname.replace(/\\/+$/, '');
+  const mcpUrl = base + '/mcp';
+  const serverGuess = document.getElementById('mcp-url').textContent;
+
+  // Update displayed URL
+  document.getElementById('mcp-url').textContent = mcpUrl;
+
+  // Update all code snippets that contain the server-side guess
+  document.querySelectorAll('pre code').forEach(function(el) {{
+    if (el.textContent.includes(serverGuess)) {{
+      el.textContent = el.textContent.split(serverGuess).join(mcpUrl);
+    }}
+  }});
+
+  if (serverGuess !== mcpUrl) {{
+    document.getElementById('url-note').textContent = 'URL auto-detected from your browser address bar.';
+  }}
+}})();
 </script>
 </body>
 </html>"""
