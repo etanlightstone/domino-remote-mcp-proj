@@ -316,6 +316,76 @@ _file_version_cache: Dict[tuple, Dict[str, Any]] = {}
 
 
 # ---------------------------------------------------------------------------
+# Tools — Hardware Tiers
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def list_hardware_tiers(
+    user_name: str,
+    project_name: str,
+    for_model_api: bool = False,
+) -> Dict[str, Any]:
+    """
+    List available hardware tiers for a Domino project.
+
+    Use this to discover hardware tier IDs before running jobs or deploying
+    model endpoints. Returns tier names, resources (cores, memory, GPU), and
+    whether each tier is the default.
+
+    Args:
+        user_name: The username of the project owner.
+        project_name: The name of the Domino project.
+        for_model_api: If True, only return tiers eligible for model API deployment.
+    """
+    project_id = _get_project_id(user_name, project_name)
+    if not project_id:
+        return {"error": f"Could not find project '{user_name}/{project_name}'."}
+
+    headers = {**_get_auth_headers(), "Content-Type": "application/json"}
+    url = f"{_get_domino_host()}/v4/projects/{project_id}/hardwareTiers"
+    params: Dict[str, Any] = {}
+    if for_model_api:
+        params["forModelApi"] = True
+
+    try:
+        response = requests.get(url, headers=headers, params=params)
+        response.raise_for_status()
+        raw_tiers = response.json()
+
+        simplified = []
+        for t in raw_tiers:
+            tier: Dict[str, Any] = {
+                "id": t.get("hardwareTierId"),
+                "name": t.get("hardwareTierName"),
+            }
+            cores = t.get("cores")
+            memory_gb = t.get("memoryInGiB") or t.get("memory")
+            if cores is not None:
+                tier["cores"] = cores
+            if memory_gb is not None:
+                tier["memoryGiB"] = memory_gb
+            is_default = t.get("isDefault")
+            is_model_api = t.get("isModelApiTier")
+            if is_default:
+                tier["isDefault"] = True
+            if is_model_api:
+                tier["isModelApiTier"] = True
+            gpu_count = t.get("numberOfGpus")
+            if gpu_count and gpu_count > 0:
+                tier["gpus"] = gpu_count
+                gpu_key = t.get("gpuKey")
+                if gpu_key:
+                    tier["gpuType"] = gpu_key
+            simplified.append(tier)
+
+        return {"hardware_tiers": simplified, "count": len(simplified)}
+    except requests.exceptions.RequestException as e:
+        return {"error": f"API request failed: {e}"}
+    except Exception as e:
+        return {"error": f"An unexpected error occurred: {e}"}
+
+
+# ---------------------------------------------------------------------------
 # Tools — Jobs
 # ---------------------------------------------------------------------------
 
@@ -325,6 +395,7 @@ async def run_domino_job(
     project_name: str,
     run_command: str,
     title: str,
+    hardware_tier_id: str | None = None,
 ) -> Dict[str, Any]:
     """
     Run a command as a job on the Domino platform.
@@ -334,6 +405,7 @@ async def run_domino_job(
         project_name: The name of the Domino project.
         run_command: The command to run, e.g. 'python train.py --lr 0.01'.
         title: A descriptive title for the job, e.g. 'training run with lr=0.01'.
+        hardware_tier_id: Optional hardware tier ID (use list_hardware_tiers to find valid IDs). If omitted, uses the project default.
     """
     encoded_user = _validate_url_parameter(user_name, "user_name")
     encoded_project = _validate_url_parameter(project_name, "project_name")
@@ -347,12 +419,14 @@ async def run_domino_job(
     else:
         command_list = shlex.split(run_command)
 
-    payload = {
+    payload: Dict[str, Any] = {
         "command": command_list,
         "isDirect": False,
         "title": title,
         "publishApiEndpoint": False,
     }
+    if hardware_tier_id:
+        payload["overrideHardwareTierId"] = hardware_tier_id
 
     try:
         response = requests.post(api_url, headers=headers, json=payload)
@@ -478,6 +552,435 @@ async def get_domino_environment_info() -> Dict[str, Any]:
         info["note"] = "Server running outside Domino."
 
     return info
+
+
+# ---------------------------------------------------------------------------
+# Tools — Model Endpoints (Model APIs)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def list_model_endpoints(
+    user_name: str,
+    project_name: str,
+) -> Dict[str, Any]:
+    """
+    List all model API endpoints in a Domino project.
+
+    Args:
+        user_name: The username of the project owner.
+        project_name: The name of the Domino project.
+    """
+    project_id = _get_project_id(user_name, project_name)
+    if not project_id:
+        return {"error": f"Could not find project '{user_name}/{project_name}'."}
+
+    headers = {**_get_auth_headers(), "Content-Type": "application/json"}
+    url = f"{_get_domino_host()}/modelManager/getModels"
+    params = {"projectId": project_id}
+
+    try:
+        response = requests.get(url, headers=headers, params=params)
+        response.raise_for_status()
+        models = response.json()
+
+        simplified = []
+        for m in models:
+            entry: Dict[str, Any] = {
+                "id": m.get("id"),
+                "name": m.get("name"),
+                "description": m.get("description"),
+                "status": m.get("activeVersionStatus"),
+                "activeVersionNumber": m.get("activeVersionNumber"),
+                "activeModelVersionId": m.get("activeModelVersionId"),
+                "isAsync": m.get("isAsync"),
+            }
+            simplified.append(entry)
+
+        return {"model_endpoints": simplified, "count": len(simplified)}
+    except requests.exceptions.RequestException as e:
+        return {"error": f"API request failed: {e}"}
+    except Exception as e:
+        return {"error": f"An unexpected error occurred: {e}"}
+
+
+@mcp.tool()
+async def publish_model_endpoint(
+    user_name: str,
+    project_name: str,
+    model_name: str,
+    inference_file: str,
+    inference_function: str,
+    description: str = "",
+    environment_id: str | None = None,
+    hardware_tier_id: str | None = None,
+    registered_model_name: str | None = None,
+    registered_model_version: str | None = None,
+    model_id: str | None = None,
+    log_http_requests: bool = False,
+) -> Dict[str, Any]:
+    """
+    Publish (or update) a model API endpoint in Domino.
+
+    Creates a new model API or adds a new version to an existing one.
+    The model image will be built asynchronously — use get_model_endpoint_status
+    to monitor progress, then start_model_deployment to deploy it.
+
+    For file-based models, provide inference_file and inference_function.
+    For registry-based models, provide registered_model_name and
+    registered_model_version instead.
+
+    Args:
+        user_name: The username of the project owner.
+        project_name: The name of the Domino project.
+        model_name: A name for the model API endpoint.
+        inference_file: Path to the model script in the project, e.g. 'model.py'.
+        inference_function: Function name to call for predictions, e.g. 'predict'.
+        description: Optional description of the model.
+        environment_id: Compute environment ID. If omitted, uses project default.
+        hardware_tier_id: Hardware tier for the endpoint (use list_hardware_tiers with for_model_api=True). If omitted, uses default model API tier.
+        registered_model_name: MLflow registered model name (alternative to file-based).
+        registered_model_version: MLflow registered model version (required with registered_model_name).
+        model_id: Existing model API ID to publish a new version to. If omitted, creates a new model API.
+        log_http_requests: If True, log request/response payloads for monitoring.
+    """
+    project_id = _get_project_id(user_name, project_name)
+    if not project_id:
+        return {"error": f"Could not find project '{user_name}/{project_name}'."}
+
+    headers = {**_get_auth_headers(), "Content-Type": "application/json"}
+    url = f"{_get_domino_host()}/v4/models/buildModelImage"
+
+    payload: Dict[str, Any] = {
+        "modelName": model_name,
+        "projectId": project_id,
+        "inferenceFunctionFile": inference_file,
+        "inferenceFunctionToCall": inference_function,
+        "logHttpRequestResponse": log_http_requests,
+    }
+    if description:
+        payload["description"] = description
+    if environment_id:
+        payload["environmentId"] = environment_id
+    if model_id:
+        payload["modelId"] = model_id
+    if registered_model_name:
+        payload["registeredModelName"] = registered_model_name
+    if registered_model_version:
+        payload["registeredModelVersion"] = registered_model_version
+
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        result = response.json()
+        out: Dict[str, Any] = {
+            "success": True,
+            "modelId": result.get("modelId"),
+            "modelVersionId": result.get("modelVersionId"),
+            "modelVersionNumber": result.get("modelVersionNumber"),
+            "buildStatus": result.get("buildStatus"),
+            "message": (
+                f"Model API '{model_name}' image build started. "
+                f"Use get_model_endpoint_status to monitor the build, then "
+                f"start_model_deployment to deploy it."
+            ),
+        }
+        if hardware_tier_id:
+            out["note"] = (
+                f"Hardware tier '{hardware_tier_id}' will be applied when you "
+                f"call start_model_deployment."
+            )
+        return out
+    except requests.exceptions.RequestException as e:
+        return {"error": f"API request failed: {e}"}
+    except Exception as e:
+        return {"error": f"An unexpected error occurred: {e}"}
+
+
+@mcp.tool()
+async def get_model_endpoint_status(
+    model_id: str,
+    model_version_id: str,
+) -> Dict[str, Any]:
+    """
+    Get the build and deployment status of a model API endpoint.
+
+    Returns both the image build status and the deployment status.
+    Build statuses: 'Building', 'Ready to run', 'Failed', etc.
+    Deployment statuses: 'Starting', 'Running', 'Stopped', 'Failed', etc.
+
+    Args:
+        model_id: The model API ID (from publish_model_endpoint or list_model_endpoints).
+        model_version_id: The model version ID.
+    """
+    headers = {**_get_auth_headers(), "Content-Type": "application/json"}
+    result: Dict[str, Any] = {"modelId": model_id, "modelVersionId": model_version_id}
+
+    # Get build status
+    build_url = f"{_get_domino_host()}/v4/models/{model_id}/{model_version_id}/getBuildStatus"
+    try:
+        response = requests.get(build_url, headers=headers)
+        response.raise_for_status()
+        build_data = response.json()
+        result["buildStatus"] = build_data.get("status") if isinstance(build_data, dict) else build_data
+    except requests.exceptions.RequestException as e:
+        result["buildStatus"] = f"Error fetching: {e}"
+
+    # Get deployment status
+    deploy_url = f"{_get_domino_host()}/v4/models/{model_id}/{model_version_id}/getModelDeploymentStatus"
+    try:
+        response = requests.get(deploy_url, headers=headers)
+        response.raise_for_status()
+        deploy_data = response.json()
+        result["deploymentStatus"] = deploy_data.get("status") if isinstance(deploy_data, dict) else deploy_data
+    except requests.exceptions.RequestException as e:
+        result["deploymentStatus"] = f"Error fetching: {e}"
+
+    return result
+
+
+@mcp.tool()
+async def start_model_deployment(
+    model_id: str,
+    model_version_id: str,
+) -> Dict[str, Any]:
+    """
+    Start the deployment of a model API version that has been built.
+
+    The model image must be built first (buildStatus = 'Ready to run').
+    Use get_model_endpoint_status to check readiness.
+
+    Args:
+        model_id: The model API ID.
+        model_version_id: The model version ID.
+    """
+    headers = {**_get_auth_headers(), "Content-Type": "application/json"}
+    url = f"{_get_domino_host()}/v4/models/{model_id}/{model_version_id}/startModelDeployment"
+
+    try:
+        response = requests.post(url, headers=headers)
+        response.raise_for_status()
+        result = response.json()
+        status = result.get("status") if isinstance(result, dict) else result
+        return {
+            "success": True,
+            "modelId": model_id,
+            "modelVersionId": model_version_id,
+            "status": status,
+            "message": "Deployment started. Use get_model_endpoint_status to monitor.",
+        }
+    except requests.exceptions.RequestException as e:
+        return {"error": f"API request failed: {e}"}
+    except Exception as e:
+        return {"error": f"An unexpected error occurred: {e}"}
+
+
+@mcp.tool()
+async def stop_model_deployment(
+    model_id: str,
+    model_version_id: str,
+) -> Dict[str, Any]:
+    """
+    Stop a running model API deployment.
+
+    Args:
+        model_id: The model API ID.
+        model_version_id: The model version ID.
+    """
+    headers = {**_get_auth_headers(), "Content-Type": "application/json"}
+    url = f"{_get_domino_host()}/v4/models/{model_id}/{model_version_id}/stopModelDeployment"
+
+    try:
+        response = requests.post(url, headers=headers)
+        response.raise_for_status()
+        result = response.json()
+        status = result.get("status") if isinstance(result, dict) else result
+        return {
+            "success": True,
+            "modelId": model_id,
+            "modelVersionId": model_version_id,
+            "status": status,
+            "message": "Deployment stopped.",
+        }
+    except requests.exceptions.RequestException as e:
+        return {"error": f"API request failed: {e}"}
+    except Exception as e:
+        return {"error": f"An unexpected error occurred: {e}"}
+
+
+# ---------------------------------------------------------------------------
+# Tools — Model Registry
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def list_registered_models() -> Dict[str, Any]:
+    """
+    List models in the Domino Model Registry.
+
+    Returns all registered models visible to the authenticated user,
+    including their names, versions, stages, and source experiments.
+    """
+    headers = {**_get_auth_headers(), "Content-Type": "application/json"}
+    url = f"{_get_domino_host()}/api/registeredmodels/v1"
+
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+        # The response may be a list or an envelope with a key
+        models = data if isinstance(data, list) else data.get("registeredModels", data.get("models", [data]))
+
+        simplified = []
+        for m in models:
+            entry: Dict[str, Any] = {
+                "name": m.get("name"),
+                "description": m.get("description", ""),
+                "latestVersion": m.get("latestVersion") or m.get("latest_versions"),
+                "tags": m.get("tags"),
+            }
+            simplified.append(entry)
+
+        return {"registered_models": simplified, "count": len(simplified)}
+    except requests.exceptions.RequestException as e:
+        return {"error": f"API request failed: {e}"}
+    except Exception as e:
+        return {"error": f"An unexpected error occurred: {e}"}
+
+
+@mcp.tool()
+async def get_registered_model(
+    model_name: str,
+) -> Dict[str, Any]:
+    """
+    Get details of a specific registered model, including all versions.
+
+    Args:
+        model_name: The registered model name in the Model Registry.
+    """
+    headers = {**_get_auth_headers(), "Content-Type": "application/json"}
+    encoded_name = urllib.parse.quote(model_name, safe='')
+
+    result: Dict[str, Any] = {}
+
+    # Get model details
+    model_url = f"{_get_domino_host()}/api/registeredmodels/v1/{encoded_name}"
+    try:
+        response = requests.get(model_url, headers=headers)
+        response.raise_for_status()
+        result["model"] = response.json()
+    except requests.exceptions.RequestException as e:
+        return {"error": f"API request failed fetching model: {e}"}
+
+    # Get versions
+    versions_url = f"{_get_domino_host()}/api/registeredmodels/v1/{encoded_name}/versions"
+    try:
+        response = requests.get(versions_url, headers=headers)
+        response.raise_for_status()
+        result["versions"] = response.json()
+    except requests.exceptions.RequestException:
+        result["versions"] = "Could not fetch versions"
+
+    # Get deployed model APIs from this registered model
+    apis_url = f"{_get_domino_host()}/api/registeredmodels/v1/{encoded_name}/modelapis"
+    try:
+        response = requests.get(apis_url, headers=headers)
+        response.raise_for_status()
+        result["deployed_model_apis"] = response.json()
+    except requests.exceptions.RequestException:
+        result["deployed_model_apis"] = []
+
+    return result
+
+
+@mcp.tool()
+async def register_model_from_experiment(
+    user_name: str,
+    project_name: str,
+    model_name: str,
+    experiment_id: str,
+    run_id: str,
+    description: str = "",
+) -> Dict[str, Any]:
+    """
+    Register a model in the Domino Model Registry from an MLflow experiment run.
+
+    This takes a model that was logged during an experiment run (via
+    mlflow.log_model or autologging) and registers it in the Domino Model
+    Registry for versioning, governance, and deployment.
+
+    Prerequisite: The experiment run must have already logged a model artifact
+    (e.g., via mlflow.sklearn.log_model, mlflow.pytorch.log_model, etc.).
+
+    Args:
+        user_name: The username of the project owner.
+        project_name: The name of the Domino project where the experiment ran.
+        model_name: Name for the registered model (new or existing). If the name
+                    already exists, a new version is added.
+        experiment_id: The MLflow experiment ID (numeric string, e.g. '1').
+        run_id: The MLflow run ID (hex string from the experiment run).
+        description: Optional description for this model version.
+    """
+    project_id = _get_project_id(user_name, project_name)
+    if not project_id:
+        return {"error": f"Could not find project '{user_name}/{project_name}'."}
+
+    headers = {**_get_auth_headers(), "Content-Type": "application/json"}
+
+    # First, try the v2 API (preferred, supports multiple sources)
+    url_v2 = f"{_get_domino_host()}/api/registeredmodels/v2"
+    payload_v2: Dict[str, Any] = {
+        "name": model_name,
+        "experimentId": experiment_id,
+        "runId": run_id,
+        "projectId": project_id,
+    }
+    if description:
+        payload_v2["description"] = description
+
+    try:
+        response = requests.post(url_v2, headers=headers, json=payload_v2)
+        response.raise_for_status()
+        result = response.json()
+        out: Dict[str, Any] = {
+            "success": True,
+            "message": f"Model '{model_name}' registered in the Model Registry.",
+            "details": result,
+        }
+        # Build a link to the model registry page
+        model_reg_name = urllib.parse.quote(model_name, safe='')
+        out["registry_url"] = f"{_get_external_host()}/model-registry/{model_reg_name}"
+        return out
+    except requests.exceptions.RequestException as e:
+        # If v2 fails, try v1 as fallback
+        pass
+
+    # Fallback: v1 API
+    url_v1 = f"{_get_domino_host()}/api/registeredmodels/v1"
+    payload_v1: Dict[str, Any] = {
+        "name": model_name,
+        "experimentId": experiment_id,
+        "runId": run_id,
+        "projectId": project_id,
+    }
+    if description:
+        payload_v1["description"] = description
+
+    try:
+        response = requests.post(url_v1, headers=headers, json=payload_v1)
+        response.raise_for_status()
+        result = response.json()
+        out = {
+            "success": True,
+            "message": f"Model '{model_name}' registered in the Model Registry (v1 API).",
+            "details": result,
+        }
+        model_reg_name = urllib.parse.quote(model_name, safe='')
+        out["registry_url"] = f"{_get_external_host()}/model-registry/{model_reg_name}"
+        return out
+    except requests.exceptions.RequestException as e:
+        return {"error": f"API request failed: {e}"}
+    except Exception as e:
+        return {"error": f"An unexpected error occurred: {e}"}
 
 
 # ---------------------------------------------------------------------------
@@ -737,11 +1240,20 @@ from starlette.responses import HTMLResponse
 def _build_landing_html(base_url: str) -> str:
     mcp_url = f"{base_url}/mcp"
     tools = [
-        ("run_domino_job", "Execute a command as a Domino job"),
+        ("list_hardware_tiers", "List available hardware tiers for a project"),
+        ("run_domino_job", "Execute a command as a Domino job (with optional hardware tier)"),
         ("check_domino_job_run_status", "Poll a job's status until finished"),
         ("check_domino_job_run_results", "Get stdout from a completed job"),
         ("get_domino_environment_info", "Discover server context and auth mode"),
         ("list_projects", "List accessible Domino projects"),
+        ("list_model_endpoints", "List model API endpoints in a project"),
+        ("publish_model_endpoint", "Build a model API image for deployment"),
+        ("get_model_endpoint_status", "Check model build and deployment status"),
+        ("start_model_deployment", "Start a built model API deployment"),
+        ("stop_model_deployment", "Stop a running model API deployment"),
+        ("list_registered_models", "List models in the Model Registry"),
+        ("get_registered_model", "Get details and versions of a registered model"),
+        ("register_model_from_experiment", "Register an MLflow experiment model in the Registry"),
         ("list_domino_project_files", "Browse files in a DFS project"),
         ("upload_file_to_domino_project", "Upload file content to a project"),
         ("download_file_from_domino_project", "Download a file from a project"),
