@@ -1,140 +1,81 @@
 # Domino Remote MCP Server
 
-A remote [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that exposes Domino Data Lab operations as tools for AI coding agents. Based on the [domino_mcp_server](https://github.com/dominodatalab/domino_mcp_server), adapted from local stdio transport to **Streamable HTTP** so it can run as a network service.
+A shared [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that exposes Domino Data Lab operations as tools for AI coding agents. Deploy it once as a Domino App, and any team member can connect their coding agent (Claude Code, Cursor, Windsurf, etc.) to run jobs, manage files, deploy models, and interact with the Model Registry — all through natural language.
 
-## What it does
+> **Already coding inside a Domino workspace?** You don't need this. Domino workspaces come with MCP tools and agent skills built in. This server is for connecting **external** coding agents running on your laptop to a shared Domino instance over the network.
 
-Coding agents (Claude Code, Cursor, Windsurf, etc.) connect to this server over HTTP and get access to Domino tools:
+## Available Tools
+
+### Hardware & Infrastructure
 
 | Tool | Description |
 |------|-------------|
-| `run_domino_job` | Execute a command as a Domino job |
-| `check_domino_job_run_status` | Poll job status (running/finished/error) |
+| `list_hardware_tiers` | List available hardware tiers for a project (cores, memory, GPU) |
+
+### Jobs
+
+| Tool | Description |
+|------|-------------|
+| `run_domino_job` | Execute a command as a Domino job (with optional hardware tier) |
+| `check_domino_job_run_status` | Poll job status (running / finished / error) |
 | `check_domino_job_run_results` | Get stdout from a completed job |
-| `get_domino_environment_info` | Discover current Domino context |
+
+### Model API Endpoints
+
+| Tool | Description |
+|------|-------------|
+| `list_model_endpoints` | List model API endpoints in a project |
+| `publish_model_endpoint` | Build a model API image (file-based or from Model Registry) |
+| `get_model_endpoint_status` | Check build and deployment status |
+| `start_model_deployment` | Start a built model API deployment |
+| `stop_model_deployment` | Stop a running model API deployment |
+
+### Model Registry
+
+| Tool | Description |
+|------|-------------|
+| `list_registered_models` | List models in the Domino Model Registry |
+| `get_registered_model` | Get details, versions, and deployments of a registered model |
+| `register_model_from_experiment` | Register an MLflow experiment model in the Registry |
+
+### Projects & Files
+
+| Tool | Description |
+|------|-------------|
+| `get_domino_environment_info` | Discover server context and auth mode |
 | `list_projects` | List accessible Domino projects |
 | `list_domino_project_files` | Browse files in a DFS project |
 | `upload_file_to_domino_project` | Upload file content to a DFS project |
 | `download_file_from_domino_project` | Download a file from a DFS project |
 | `smart_sync_file` | Upload with conflict detection |
 
-## Deployment
+## Deployment: Domino App with Identity Propagation
 
-### Option A: As a Domino App (recommended)
+This server is designed to run as a **Domino App** with [App Identity Propagation](https://docs.dominodatalab.com/en/latest/user_guide/4af320/configure-app-identity-propagation/) enabled. This allows each connecting user's Domino API key to flow through to the platform, so actions run under **their identity** with their permissions and audit trail.
+
+### Setup Steps
 
 1. **Create a Domino project** (or use an existing one) and add these files to it.
 
 2. **Publish as an App** in the Domino UI:
    - Set the app script to `app.sh`
-   - The server binds to port 8888 automatically (Domino's required port)
+   - The server binds to port 8888 (Domino's required app port)
 
-3. **Note the app URL** — it will look something like:
+3. **Enable Identity Propagation** on the app so that each user's credentials are forwarded. See the [Domino docs on App Identity Propagation](https://docs.dominodatalab.com/en/latest/user_guide/4af320/configure-app-identity-propagation/) for how to enable this in your deployment.
+
+4. **Note the app URL** — it will look something like:
    ```
    https://your-domino.example.com/modelproducts/<app-id>/
    ```
+   The MCP endpoint is at `{app-url}/mcp`.
 
-4. The MCP endpoint is at `{app-url}/mcp`.
-
-**Auth:** By default, the server uses the **app owner's identity** for all Domino API calls (via the `localhost:8899` ephemeral token). This means all operations run under the permissions of the user who published the app.
-
-### Option B: Standalone (outside Domino)
-
-```bash
-# Set environment variables
-export DOMINO_HOST=https://your-domino.example.com
-export DOMINO_API_KEY=your-api-key-here
-
-# Install and run
-pip install -r requirements.txt
-python domino_mcp_server.py
-```
-
-The server starts on port 8888. Override with `MCP_PORT=9000`.
+Without identity propagation, all Domino API calls use the **app owner's identity** (via the `localhost:8899` ephemeral token). This still works, but there's no per-user audit trail — all actions appear as the app owner.
 
 ## Connecting Your Coding Agent
 
-### Claude Code
+For instructions on configuring Claude Code, Cursor, or other coding agents to connect to this MCP server, see:
 
-```bash
-# Basic — connect to the remote MCP server
-claude mcp add --transport http domino https://your-domino.example.com/modelproducts/<app-id>/mcp
-
-# If Domino requires API key auth to reach the app URL:
-claude mcp add --transport http domino \
-  https://your-domino.example.com/modelproducts/<app-id>/mcp \
-  --header "X-Domino-Api-Key: ${DOMINO_API_KEY}"
-```
-
-Verify it's connected:
-```bash
-claude mcp list
-```
-
-### Cursor
-
-Add to `.cursor/mcp.json` in your project:
-
-```json
-{
-  "mcpServers": {
-    "domino": {
-      "url": "https://your-domino.example.com/modelproducts/<app-id>/mcp",
-      "transport": "streamable-http"
-    }
-  }
-}
-```
-
-If Domino requires auth to reach the app:
-
-```json
-{
-  "mcpServers": {
-    "domino": {
-      "url": "https://your-domino.example.com/modelproducts/<app-id>/mcp",
-      "transport": "streamable-http",
-      "headers": {
-        "X-Domino-Api-Key": "${DOMINO_API_KEY}"
-      }
-    }
-  }
-}
-```
-
-### Other agents
-
-Any MCP client that supports Streamable HTTP transport can connect. The endpoint is:
-```
-POST/GET  {server-url}/mcp
-```
-
-## Authentication Modes
-
-Controlled by the `MCP_AUTH_MODE` environment variable on the server.
-
-### `app_owner` (default)
-
-All Domino API calls use the app owner's identity. Simple — no per-user setup.
-
-- Inside Domino: ephemeral token from `localhost:8899`
-- Outside Domino: `DOMINO_API_KEY` env var
-
-**Tradeoff:** No per-user audit trail in Domino. All actions appear as the app owner.
-
-### `user_token`
-
-Each connecting user provides their own Domino API key via the `X-Domino-User-Api-Key` HTTP header. The server uses that key for Domino API calls on their behalf.
-
-```bash
-# Claude Code with per-user auth
-claude mcp add --transport http domino \
-  https://your-domino.example.com/modelproducts/<app-id>/mcp \
-  --header "X-Domino-User-Api-Key: ${DOMINO_API_KEY}"
-```
-
-**Benefit:** Per-user permissions and audit trail.
-
-**Note:** This mode requires that Domino's reverse proxy forwards the `X-Domino-User-Api-Key` header to the app. If Domino strips custom headers, you may need to test this in your environment.
+**[domino_remote_mcp_agent_skill](https://github.com/etanlightstone/domino_remote_mcp_agent_skill)** — the companion repo with agent setup instructions, skills, and configuration examples.
 
 ## Architecture
 
@@ -142,44 +83,56 @@ claude mcp add --transport http domino \
 Coding Agent (Claude Code / Cursor / etc.)
     │
     │  Streamable HTTP (MCP protocol)
-    │  POST/GET  {app-url}/mcp
+    │  Header: X-Domino-User-Api-Key (identity propagation)
     │
     ▼
-┌─────────────────────────────────┐
-│  Domino App  (port 8888)        │
-│  FastMCP  transport="http"      │
-│                                 │
-│  ┌───────────────────────────┐  │
-│  │ Tools:                    │  │
-│  │  run_domino_job           │  │
-│  │  check_job_status/results │  │
-│  │  list/upload/download     │  │
-│  │  smart_sync_file          │  │
-│  │  list_projects            │  │
-│  └─────────┬─────────────────┘  │
-│            │                    │
-│  Auth: localhost:8899 token     │
-│    (or user's API key)          │
-└────────────┬────────────────────┘
-             │
-             │  Domino REST APIs
-             │  /v1/..., /v4/...
-             ▼
-      Domino Platform
+┌──────────────────────────────────────┐
+│  Domino App  (port 8888)             │
+│  FastMCP  transport="streamable-http"│
+│                                      │
+│  ┌────────────────────────────────┐  │
+│  │ Tools:                         │  │
+│  │  Jobs       – run, status,     │  │
+│  │               results          │  │
+│  │  HW Tiers   – list             │  │
+│  │  Models     – publish, deploy, │  │
+│  │               start, stop      │  │
+│  │  Registry   – list, register,  │  │
+│  │               get details      │  │
+│  │  Files      – list, upload,    │  │
+│  │               download, sync   │  │
+│  │  Projects   – list, env info   │  │
+│  └──────────────┬─────────────────┘  │
+│                 │                    │
+│  Auth: user's API key (propagated)   │
+│    or app owner's token (fallback)   │
+└─────────────────┬────────────────────┘
+                  │
+                  │  Domino REST APIs
+                  │  /v1/..., /v4/..., /api/...
+                  ▼
+           Domino Platform
 ```
 
-## Changes from the Original MCP Server
+## Typical Workflows
 
-This is adapted from [dominodatalab/domino_mcp_server](https://github.com/dominodatalab/domino_mcp_server):
+### Train → Register → Deploy
 
-| Change | Why |
-|--------|-----|
-| Transport: `stdio` → `streamable-http` | Network-accessible instead of local subprocess |
-| Removed `open_web_browser` | No browser on a server |
-| Removed `sync_local_file_to_domino` | Reads server filesystem, not user's |
-| Added `list_projects` | Useful for project discovery by remote agents |
-| Added `user_token` auth mode | Optional per-user identity for remote users |
-| Uses `fastmcp` package | Better HTTP transport support than `mcp[cli]` |
+This is the end-to-end ML lifecycle through the MCP server:
+
+1. **Upload training code** to the project with `upload_file_to_domino_project`
+2. **Run training** with `run_domino_job` (optionally targeting a GPU tier via `hardware_tier_id`)
+3. **Monitor** with `check_domino_job_run_status`, get output with `check_domino_job_run_results`
+4. **Register the model** from the experiment run into the Model Registry with `register_model_from_experiment`
+5. **Deploy as an API** with `publish_model_endpoint` (file-based or from the registry), then `start_model_deployment`
+6. **Monitor the endpoint** with `get_model_endpoint_status`
+
+### Model Registry ↔ Model API Endpoints
+
+The `publish_model_endpoint` tool supports two modes:
+
+- **File-based**: point it at a script and function in the project (`inference_file` + `inference_function`)
+- **Registry-based**: point it at a registered model (`registered_model_name` + `registered_model_version`) — the model artifact is pulled from the registry automatically
 
 ## Extending
 
@@ -206,3 +159,7 @@ The server auto-discovers tools — just add the function and restart.
 | `MCP_AUTH_MODE` | No | `app_owner` | `app_owner` or `user_token` |
 | `MCP_PORT` | No | `8888` | Port to listen on |
 | `API_KEY_OVERRIDE` | No | — | Forces a specific API key (debugging) |
+
+## Origin
+
+Adapted from [dominodatalab/domino_mcp_server](https://github.com/dominodatalab/domino_mcp_server) (local stdio transport) to a remote Streamable HTTP service suitable for shared team use as a Domino App.
