@@ -761,7 +761,7 @@ async def start_model_deployment(
     url = f"{_get_domino_host()}/v4/models/{model_id}/{model_version_id}/startModelDeployment"
 
     try:
-        response = requests.post(url, headers=headers)
+        response = requests.post(url, headers=headers, json={})
         response.raise_for_status()
         result = response.json()
         status = result.get("status") if isinstance(result, dict) else result
@@ -794,7 +794,7 @@ async def stop_model_deployment(
     url = f"{_get_domino_host()}/v4/models/{model_id}/{model_version_id}/stopModelDeployment"
 
     try:
-        response = requests.post(url, headers=headers)
+        response = requests.post(url, headers=headers, json={})
         response.raise_for_status()
         result = response.json()
         status = result.get("status") if isinstance(result, dict) else result
