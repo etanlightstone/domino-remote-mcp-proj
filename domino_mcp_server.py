@@ -215,10 +215,6 @@ def _extract_and_format_mlflow_url(text: str, user_name: str, project_name: str)
 
 def _get_project_id(user_name: str, project_name: str) -> str | None:
     """Gets the project ID for a given user and project name."""
-    domino_project_id = os.getenv("DOMINO_PROJECT_ID")
-    if domino_project_id:
-        return domino_project_id
-
     headers = {**_get_auth_headers(), "Content-Type": "application/json"}
     url = f"{_get_domino_host()}/v4/gateway/projects"
 
@@ -231,6 +227,14 @@ def _get_project_id(user_name: str, project_name: str) -> str | None:
                     return project.get("id")
     except requests.exceptions.RequestException:
         pass
+
+    # Fall back to the host project only if the API lookup found nothing
+    # and the requested project matches the current environment.
+    domino_project_name = os.getenv("DOMINO_PROJECT_NAME")
+    domino_project_id = os.getenv("DOMINO_PROJECT_ID")
+    if domino_project_id and domino_project_name == project_name:
+        return domino_project_id
+
     return None
 
 
