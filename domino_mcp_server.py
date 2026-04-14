@@ -1293,7 +1293,7 @@ def _build_landing_html(base_url: str) -> str:
               margin: 16px 0 8px; }}
   .card h3:first-child {{ margin-top: 0; }}
   .endpoint {{ display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }}
-  .endpoint code {{ flex: 1; background: #F7F7F8; border: 1px solid #E0E0E0; border-radius: 4px;
+  .endpoint code {{ flex: 1; background: #1E1E2E; color: #CDD6F4; border: none; border-radius: 4px;
                     padding: 10px 12px; font-size: 14px; font-family: 'SF Mono', Menlo, monospace; word-break: break-all; }}
   .copy-btn {{ background: #543FDE; color: #fff; border: none; border-radius: 4px; padding: 10px 16px;
                font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; font-family: Inter, sans-serif; }}
