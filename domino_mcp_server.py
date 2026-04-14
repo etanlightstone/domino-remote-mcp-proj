@@ -1314,13 +1314,14 @@ def _build_landing_html(base_url: str) -> str:
   .note {{ background: #F0EDFC; border-left: 3px solid #543FDE; padding: 12px 16px; border-radius: 0 4px 4px 0;
            font-size: 13px; color: #3B23D1; margin-top: 12px; line-height: 1.5; }}
   details.setup-guide {{ }}
-  details.setup-guide summary {{ cursor: pointer; font-size: 15px; font-weight: 600; list-style: none; display: flex; align-items: center; gap: 8px; }}
+  details.setup-guide summary {{ cursor: pointer; font-size: 13px; font-weight: 500; color: #543FDE; list-style: none; display: flex; align-items: center; gap: 6px; }}
   details.setup-guide summary::-webkit-details-marker {{ display: none; }}
   details.setup-guide summary::before {{ content: '\25B6'; font-size: 10px; transition: transform 0.2s; }}
   details.setup-guide[open] summary::before {{ transform: rotate(90deg); }}
-  details.setup-guide .setup-optional {{ font-size: 13px; color: #65657B; font-weight: 400; margin-top: 8px; margin-bottom: 16px; }}
-  details.setup-guide .setup-optional a {{ color: #543FDE; text-decoration: none; }}
-  details.setup-guide .setup-optional a:hover {{ text-decoration: underline; }}
+  .setup-optional {{ background: #F0EDFC; border-left: 3px solid #543FDE; padding: 10px 14px; border-radius: 0 4px 4px 0;
+                     font-size: 13px; font-weight: 600; color: #3B23D1; margin-bottom: 16px; line-height: 1.5; }}
+  .setup-optional a {{ color: #543FDE; text-decoration: underline; font-weight: 700; }}
+  .setup-optional a:hover {{ color: #3B23D1; }}
   .warn {{ background: #FFF8E1; border-left: 3px solid #CCB718; padding: 12px 16px; border-radius: 0 4px 4px 0;
            font-size: 13px; color: #7A6E0E; margin-top: 12px; line-height: 1.5; }}
   table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
@@ -1363,10 +1364,11 @@ def _build_landing_html(base_url: str) -> str:
 
   <!-- Setup Guide -->
   <div class="card">
+    <h2 style="margin-bottom:8px;">Setup Guide</h2>
+    <div class="setup-optional">Setup is optional if your local directory uses the
+      <a href="https://github.com/etanlightstone/domino_remote_mcp_agent_skill" target="_blank" rel="noopener">domino_remote_mcp_agent_skill</a> configuration.</div>
     <details class="setup-guide">
-      <summary>Setup Guide</summary>
-      <p class="setup-optional">Setup is optional if your local directory uses the
-        <a href="https://github.com/etanlightstone/domino_remote_mcp_agent_skill" target="_blank" rel="noopener">domino_remote_mcp_agent_skill</a> configuration.</p>
+      <summary>Show setup instructions</summary>
 
     <div class="step">
       <div class="step-num">1</div>
